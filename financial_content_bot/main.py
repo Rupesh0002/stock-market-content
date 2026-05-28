@@ -144,12 +144,11 @@ def run_pipeline() -> None:
         _cleanup_temp()
 
         # ── Step 6: Telegram ──────────────────────────────────
-        print("  ▶ [6/6]  Sending to Telegram…")
-        from telegram_notify import send_message, send_video
+        print("  ▶ [6/6]  Sending update to Telegram…")
+        from telegram_notify import send_message
         top   = data["gainers"][0]
         lines = [
-            f"✅ <b>Daily Content Ready</b>",
-            f"📅 {run_ts}",
+            f"✅ <b>Daily Content Ready</b>  —  {run_ts}",
             f"",
             f"₿ Top crypto: <b>{top['symbol'].upper()}</b>"
             f" +{top['price_change_percentage_24h']:.1f}%",
@@ -159,15 +158,19 @@ def run_pipeline() -> None:
         if data["india_indices"]:
             n    = data["india_indices"][0]
             sign = "+" if n["change_pct"] >= 0 else ""
-            lines.append(f"🇮🇳 Nifty 50: <b>{n['price']:,.0f}</b> ({sign}{n['change_pct']:.2f}%)")
+            lines.append(
+                f"🇮🇳 Nifty 50: <b>{n['price']:,.0f}</b>"
+                f" ({sign}{n['change_pct']:.2f}%)"
+            )
         if data["india_stocks"]:
             s = data["india_stocks"][0]
             lines.append(f"📈 Top NSE: <b>{s['symbol']}</b> +{s['change_pct']:.1f}%")
-        summary = "\n".join(lines)
-        send_message(summary)
+        lines.append(f"")
         for name, path in video_paths.items():
-            send_video(path, caption=f"{config.CHANNEL_NAME} — {name}")
-        print("        ✓  Telegram notifications sent.")
+            size_mb = path.stat().st_size / 1_048_576
+            lines.append(f"🎬 <code>{path.name}</code>  ({size_mb:.1f} MB)")
+        send_message("\n".join(lines))
+        print("        ✓  Telegram update sent.")
 
     except Exception as exc:  # noqa: BLE001
         logger.error("Pipeline FAILED: %s", exc, exc_info=True)
