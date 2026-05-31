@@ -1,10 +1,12 @@
 # ─────────────────────────────────────────────────────────────
 #  script_generator.py  —  Gemini LLM script generation
 # ─────────────────────────────────────────────────────────────
+import json
 import logging
+import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
 import requests
 
@@ -40,7 +42,11 @@ GEMINI_URL = (
 
 
 def _call_gemini(prompt: str) -> str:
-    """Send a prompt to the Gemini REST API and return the response text."""
+    """Send a prompt to the Gemini REST API and return the response text.
+
+    Retries up to GEMINI_MAX_RETRIES times on 429 quota errors, with
+    exponential backoff (30 s → 60 s → 120 s).
+    """
     if not config.GEMINI_API_KEY:
         raise ValueError(
             "GEMINI_API_KEY is empty. Add your key to config.py. "
@@ -48,21 +54,64 @@ def _call_gemini(prompt: str) -> str:
         )
     url = GEMINI_URL.format(model=config.GEMINI_MODEL)
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
-    resp = requests.post(
-        url,
-        params={"key": config.GEMINI_API_KEY},
-        json=payload,
-        timeout=60,
-    )
-    if not resp.ok:
-        raise RuntimeError(
-            f"Gemini API error {resp.status_code}: {resp.text[:300]}"
+
+    for attempt in range(1, config.GEMINI_MAX_RETRIES + 1):
+        resp = requests.post(
+            url,
+            params={"key": config.GEMINI_API_KEY},
+            json=payload,
+            timeout=60,
         )
-    data = resp.json()
-    try:
-        return data["candidates"][0]["content"]["parts"][0]["text"]
-    except (KeyError, IndexError) as exc:
-        raise RuntimeError(f"Unexpected Gemini response shape: {data}") from exc
+        if resp.status_code == 429:
+            if attempt < config.GEMINI_MAX_RETRIES:
+                wait = config.GEMINI_RETRY_DELAY * (2 ** (attempt - 1))
+                logger.warning(
+                    "Gemini quota hit (429) — waiting %ds before retry %d/%d",
+                    wait, attempt, config.GEMINI_MAX_RETRIES,
+                )
+                time.sleep(wait)
+                continue
+            raise RuntimeError(
+                f"Gemini API error {resp.status_code}: {resp.text[:300]}"
+            )
+        if not resp.ok:
+            raise RuntimeError(
+                f"Gemini API error {resp.status_code}: {resp.text[:300]}"
+            )
+        data = resp.json()
+        try:
+            return data["candidates"][0]["content"]["parts"][0]["text"]
+        except (KeyError, IndexError) as exc:
+            raise RuntimeError(f"Unexpected Gemini response shape: {data}") from exc
+
+    raise RuntimeError("Gemini API failed after all retries.")
+
+
+# ── Daily script cache ────────────────────────────────────────
+
+def _cache_path(date_str: str) -> Path:
+    return Path(config.OUTPUT_DIR) / f"scripts_{date_str}.json"
+
+
+def _load_cached_scripts(date_str: str) -> Optional[Dict[str, str]]:
+    """Return today's cached scripts if available, else None."""
+    path = _cache_path(date_str)
+    if path.exists():
+        try:
+            with open(path, encoding="utf-8") as fh:
+                cached = json.load(fh)
+            logger.info("Using cached scripts from %s — skipping Gemini API calls.", path)
+            return cached
+        except Exception as exc:
+            logger.warning("Script cache unreadable (%s) — regenerating.", exc)
+    return None
+
+
+def _save_cached_scripts(date_str: str, scripts: Dict[str, str]) -> None:
+    Path(config.OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
+    with open(_cache_path(date_str), "w", encoding="utf-8") as fh:
+        json.dump(scripts, fh, indent=2)
+    logger.info("Scripts cached to %s.", _cache_path(date_str))
 
 
 # ── Prompt builders ───────────────────────────────────────────
@@ -188,11 +237,19 @@ def generate_scripts(data: Dict) -> Dict[str, str]:
     Returns:
         {'gainers': <script A text>, 'overview': <script B text>}
     """
+    date_str = datetime.now().strftime("%Y%m%d")
+
+    cached = _load_cached_scripts(date_str)
+    if cached:
+        return cached
+
     logger.info("Generating Script A (gainers)…")
     try:
         script_a = _call_gemini(_build_gainers_prompt(data)).strip()
     except Exception as exc:
         raise RuntimeError(f"Gemini failed on Script A: {exc}") from exc
+
+    time.sleep(config.GEMINI_CALL_DELAY)
 
     logger.info("Generating Script B (overview)…")
     try:
@@ -203,6 +260,7 @@ def generate_scripts(data: Dict) -> Dict[str, str]:
     scripts = {"gainers": script_a, "overview": script_b}
 
     if data.get("india_indices") or data.get("india_stocks"):
+        time.sleep(config.GEMINI_CALL_DELAY)
         logger.info("Generating Script C (India)…")
         try:
             script_c = _call_gemini(_build_india_prompt(data)).strip()
@@ -210,10 +268,11 @@ def generate_scripts(data: Dict) -> Dict[str, str]:
         except Exception as exc:
             logger.warning("Gemini failed on Script C (India) — skipping: %s", exc)
 
+    _save_cached_scripts(date_str, scripts)
+
     # ── Log scripts to /temp for review ──────────────────────
     temp_dir = Path(config.TEMP_DIR)
     temp_dir.mkdir(exist_ok=True)
-    date_str = datetime.now().strftime("%Y%m%d")
     log_path = temp_dir / f"script_{date_str}.txt"
 
     with open(log_path, "w", encoding="utf-8") as fh:

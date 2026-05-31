@@ -34,6 +34,9 @@ CHART_DPI: int = 100              # 1080/100=10.8in × 1920/100=19.2in
 
 # ── Gemini ──────────────────────────────────────────────────
 GEMINI_MODEL: str = "gemini-2.0-flash"
+GEMINI_MAX_RETRIES: int = 3          # retries on 429 quota errors
+GEMINI_RETRY_DELAY: int = 30         # base delay in seconds; doubles each retry (30→60→120)
+GEMINI_CALL_DELAY: float = 4.0       # seconds between successive Gemini calls
 
 # ── Voices ──────────────────────────────────────────────────
 VOICE_GAINERS: str  = "en-US-ChristopherNeural"   # energetic
