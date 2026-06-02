@@ -16,11 +16,19 @@ jobs:
       - name: Set today's date (UTC)
         run: echo "TODAY=$(date -u +%Y%m%d)" >> $GITHUB_ENV
 
+      - name: Create output directory
+        run: mkdir -p output
+
+      # Restore any scripts already generated today (from a previous run that hit quota mid-way).
+      # restore-keys finds the latest partial cache for today even if the exact key differs.
       - name: Restore daily script cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
+        continue-on-error: true
         with:
           path: output/scripts_${{ env.TODAY }}.json
-          key: gemini-scripts-${{ env.TODAY }}
+          key: gemini-scripts-${{ env.TODAY }}-${{ github.run_id }}
+          restore-keys: |
+            gemini-scripts-${{ env.TODAY }}-
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -40,3 +48,13 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python main.py --now
+
+      # Save whatever scripts were generated (even partial) so re-runs skip already-cached scripts.
+      # Uses a unique key per run; restore-keys above will pick up the latest on the next run.
+      - name: Save daily script cache
+        uses: actions/cache/save@v4
+        if: always()
+        continue-on-error: true
+        with:
+          path: output/scripts_${{ env.TODAY }}.json
+          key: gemini-scripts-${{ env.TODAY }}-${{ github.run_id }}
